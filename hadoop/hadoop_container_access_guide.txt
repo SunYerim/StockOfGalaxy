@@ -1,0 +1,27 @@
+# at nameNode
+$ docker restart nameNode
+$ docker attach nameNode
+
+# at dataNode
+$ docker restart dataNode
+$ docker attach dataNode
+
+# at mongo-container
+$ docker restart mongo-container
+$ docker exec -it mongo-container bash
+
+# at nameNode, at dataNode
+$ service ssh restart
+$ service ssh status # sshd is running
+
+# at nameNode
+$ start-all.sh
+
+# at nameNode, at dataNode
+$ jps
+
+# at dataNode
+# ※db명과 collection명은 서버 nosql환경에 맞춰 변경 필요
+$ pyspark --conf "spark.mongodb.read.connection.uri=mongodb://mongo-container/news_db.news_collection1?readPreference=primaryPreferred" --conf "spark.mongodb.write.connection.uri=mongodb://mongo-container/news_db.news_collection1" --packages org.mongodb.spark:mongo-spark-connector_2.12:10.3.0
+
+# 이후 pyspark에서 아래 코드 실행
