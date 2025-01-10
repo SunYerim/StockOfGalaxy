@@ -7,9 +7,10 @@ import com.sog.stock.domain.dto.websocket.StockPriceResponseDTO;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
@@ -38,9 +39,9 @@ public class RealTimeWebSocketService {
     private final String kisWebSocketEndPoint = "/tryitout/H0STCNT0";
 
     // 종목 코드별로 구독한 클라이언트 세션을 관리
-    private final Map<String, List<WebSocketSession>> stockCodeSubscribers = new ConcurrentHashMap<>();
+    private final Map<String, Set<WebSocketSession>> stockCodeSubscribers = new ConcurrentHashMap<>();
     // 세션별 구독 중인 종목을 관리
-    private final Map<WebSocketSession, String> sessionStockMap = new ConcurrentHashMap<>();
+    private final Map<WebSocketSession, Set<String>> sessionStockMap = new ConcurrentHashMap<>();
 
     @Autowired
     public RealTimeWebSocketService(WebSocketClient webSocketClient,
@@ -92,7 +93,7 @@ public class RealTimeWebSocketService {
             if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
                 log.info("PINGPONG 메시지 수신, 연결 유지 중...");
                 // 모든 구독자에게 PINGPONG 메시지를 전송
-                for (List<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
+                for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
                     for (WebSocketSession clientSession : subscribers) {
                         if (clientSession.isOpen()) {
                             clientSession.sendMessage(new TextMessage(payload));
@@ -121,13 +122,13 @@ public class RealTimeWebSocketService {
 
                     // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
                     for (String stockCode : stockCodeSubscribers.keySet()) {
-                        List<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
                         // subscribers가 null이 아니고, 크기가 0이 아닐 때만 실행
                         if (subscribers != null && !subscribers.isEmpty()) {
 
-                            // 리스트 복사본을 사용하여 ConcurrentModificationException 방지
-                            List<WebSocketSession> subscribersCopy = new ArrayList<>(subscribers);
+                            // 복사본을 사용하여 ConcurrentModificationException 방지
+                            Set<WebSocketSession> subscribersCopy = new HashSet<>(subscribers);
 
                             for (WebSocketSession clientSession : subscribersCopy) {
                                 if (clientSession.isOpen()) {
@@ -158,11 +159,11 @@ public class RealTimeWebSocketService {
         if (stockPriceResponseDTO != null) {
             // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
             String stockCode = stockPriceResponseDTO.getStock_code();
-            List<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
             // 구독자가 있을 경우
             if (subscribers != null) {
-                List<WebSocketSession> closedSessions = new ArrayList<>(); // 닫힌 세션 저장
+                Set<WebSocketSession> closedSessions = new HashSet<>(); // 닫힌 세션 저장
 
                 // 구독자에게 실시간 데이터 전송
                 for (WebSocketSession clientSession : subscribers) {
@@ -194,7 +195,7 @@ public class RealTimeWebSocketService {
         }
 
         // 종목 코드별로 세션 구독 관리
-        List<WebSocketSession> subscribers = stockCodeSubscribers.computeIfAbsent(stockCode, k -> new ArrayList<>());
+        Set<WebSocketSession> subscribers = stockCodeSubscribers.computeIfAbsent(stockCode, k -> ConcurrentHashMap.newKeySet());
 
         // 중복 구독 방지
         if (!forceReSubscribe && subscribers.contains(clientSession)) {
@@ -204,12 +205,37 @@ public class RealTimeWebSocketService {
 
         // 종목별로 구독하는 세션을 추가
         subscribers.add(clientSession);
-        sessionStockMap.put(clientSession, stockCode);
+
+        // 세션별 구독 종목 관리
+        sessionStockMap.computeIfAbsent(clientSession, k -> ConcurrentHashMap.newKeySet()).add(stockCode);
 
         // KIS WebSocket에 구독 요청 전송
         String requestMessage = createSubscribeMessage(stockCode);
         kisWebSocketSession.sendMessage(new TextMessage(requestMessage));
         log.info("Sent subscription request for stock: {}", stockCode);
+    }
+
+    // 클라이언트가 특정 종목 구독을 해제하는 메서드
+    public void unsubscribeFromStock(String stockCode, WebSocketSession clientSession) {
+        synchronized (this) {
+            // 종목별 구독 세션 관리에서 제거
+            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+            if (subscribers != null) {
+                subscribers.remove(clientSession);
+                if (subscribers.isEmpty()) {
+                    stockCodeSubscribers.remove(stockCode); // 구독자가 없으면 제거
+                }
+            }
+
+            // 세션별 구독 종목 관리에서 제거
+            Set<String> subscribedStocks = sessionStockMap.get(clientSession);
+            if (subscribedStocks != null) {
+                subscribedStocks.remove(stockCode);
+                if (subscribedStocks.isEmpty()) {
+                    sessionStockMap.remove(clientSession); // 세션이 더 이상 필요하지 않으면 제거
+                }
+            }
+        }
     }
 
 
@@ -290,12 +316,21 @@ public class RealTimeWebSocketService {
     // 클라이언트 세션 모두 종료 시 KIS WebSocket도 연결 해제 합니다.
     public void disconnectFromKisWebSocket(WebSocketSession session) {
         if (session != null) {
-            String stockCode = sessionStockMap.remove(session); // 해당 세션이 구독 중인 주식 코드 제거
-            if (stockCode != null) {
-                List<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-                subscribers.remove(session);
-                if (subscribers.isEmpty()) {
-                    stockCodeSubscribers.remove(stockCode); // 구독자가 없으면 리스트에서 제거
+            // 세션이 구독 중인 모든 종목 가져오기
+            Set<String> subscribedStocks = sessionStockMap.remove(session);
+
+            if (subscribedStocks != null) {
+                for (String stockCode : subscribedStocks) {
+                    // 종목별 구독자 목록에서 해당 세션 제거
+                    Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                    if (subscribers != null) {
+                        subscribers.remove(session);
+
+                        // 구독자가 없으면 종목 제거
+                        if (subscribers.isEmpty()) {
+                            stockCodeSubscribers.remove(stockCode);
+                        }
+                    }
                 }
             }
         }
