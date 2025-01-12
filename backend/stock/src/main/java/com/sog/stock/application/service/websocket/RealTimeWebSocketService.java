@@ -5,10 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sog.stock.application.service.kis.KisRealTimeWebSocketKeyService;
 import com.sog.stock.domain.dto.websocket.StockPriceResponseDTO;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -158,7 +156,7 @@ public class RealTimeWebSocketService {
         StockPriceResponseDTO stockPriceResponseDTO = parseStockResponse(payload);
         if (stockPriceResponseDTO != null) {
             // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
-            String stockCode = stockPriceResponseDTO.getStock_code();
+            String stockCode = stockPriceResponseDTO.getStockCode();
             Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
             // 구독자가 있을 경우
@@ -271,11 +269,11 @@ public class RealTimeWebSocketService {
 
         // DTO로 매핑
         StockPriceResponseDTO stockPriceResponseDTO = new StockPriceResponseDTO();
-        stockPriceResponseDTO.setStock_code(caretSplitData[0]);
-        stockPriceResponseDTO.setStock_prpr(caretSplitData[2]);
-        stockPriceResponseDTO.setPrdy_vrss_sign(caretSplitData[3]);
-        stockPriceResponseDTO.setPrdy_vrss(caretSplitData[4]);
-        stockPriceResponseDTO.setPrdy_ctrt(caretSplitData[5]);
+        stockPriceResponseDTO.setStockCode(caretSplitData[0]);
+        stockPriceResponseDTO.setStockPrpr(caretSplitData[2]);
+        stockPriceResponseDTO.setPrdyVrssSign(caretSplitData[3]);
+        stockPriceResponseDTO.setPrdyVrss(caretSplitData[4]);
+        stockPriceResponseDTO.setPrdyCtrt(caretSplitData[5]);
 
         return stockPriceResponseDTO;
     }
