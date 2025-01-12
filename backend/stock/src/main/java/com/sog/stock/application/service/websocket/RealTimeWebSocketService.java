@@ -5,8 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sog.stock.application.service.kis.KisRealTimeWebSocketKeyService;
 import com.sog.stock.domain.dto.websocket.StockPriceResponseDTO;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -87,14 +90,21 @@ public class RealTimeWebSocketService {
         // json메시지 (구독 성공) 처리
         if (isJsonMessage(payload)) {
             JSONObject jsonResponse = new JSONObject(payload);
+
             // PINGPONG 메시지 처리
             if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
                 log.info("PINGPONG 메시지 수신, 연결 유지 중...");
                 // 모든 구독자에게 PINGPONG 메시지를 전송
-                for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
-                    for (WebSocketSession clientSession : subscribers) {
-                        if (clientSession.isOpen()) {
-                            clientSession.sendMessage(new TextMessage(payload));
+                synchronized (stockCodeSubscribers) { // 동기화로 데이터 무결성 보장
+                    for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
+                        Iterator<WebSocketSession> iterator = subscribers.iterator();
+                        while (iterator.hasNext()) {
+                            WebSocketSession clientSession = iterator.next();
+                            if (clientSession.isOpen()) {
+                                clientSession.sendMessage(new TextMessage(payload));
+                            } else {
+                                iterator.remove(); // 닫힌 세션 제거
+                            }
                         }
                     }
                 }
@@ -119,24 +129,26 @@ public class RealTimeWebSocketService {
                     connectToKisWebSocket(); // WebSocket 재연결
 
                     // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
-                    for (String stockCode : stockCodeSubscribers.keySet()) {
-                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                    // 동기화로 데이터 무결성을 보장
+                    synchronized (stockCodeSubscribers) {
+                        for (String stockCode : stockCodeSubscribers.keySet()) {
+                            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
-                        // subscribers가 null이 아니고, 크기가 0이 아닐 때만 실행
-                        if (subscribers != null && !subscribers.isEmpty()) {
-
-                            // 복사본을 사용하여 ConcurrentModificationException 방지
-                            Set<WebSocketSession> subscribersCopy = new HashSet<>(subscribers);
-
-                            for (WebSocketSession clientSession : subscribersCopy) {
-                                if (clientSession.isOpen()) {
-                                    log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
-                                    subscribeToStock(stockCode, clientSession, true); // 다시 구독 요청
+                            // subscribers가 null이 아니고, 크기가 0이 아닐 때만 실행
+                            if (subscribers != null && !subscribers.isEmpty()) {
+                                Iterator<WebSocketSession> iterator = subscribers.iterator();
+                                while (iterator.hasNext()) {
+                                    WebSocketSession clientSession = iterator.next();
+                                    if (clientSession.isOpen()) {
+                                        log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
+                                        subscribeToStock(stockCode, clientSession, true);
+                                    } else {
+                                        iterator.remove(); // 닫힌 세션 제거
+                                    }
                                 }
                             }
                         }
                     }
-
                 } else {
                     log.error("키 재발급에 실패했습니다.");
                     throw new IllegalStateException("WebSocket 키 재발급 실패");
@@ -161,23 +173,33 @@ public class RealTimeWebSocketService {
 
             // 구독자가 있을 경우
             if (subscribers != null) {
-                Set<WebSocketSession> closedSessions = new HashSet<>(); // 닫힌 세션 저장
-
-                // 구독자에게 실시간 데이터 전송
-                for (WebSocketSession clientSession : subscribers) {
-                    if (clientSession.isOpen()) {
-                        clientSession.sendMessage(new TextMessage(
-                            new ObjectMapper().writeValueAsString(stockPriceResponseDTO)));
-                    } else {
-                        log.warn("클라이언트 세션이 닫혀있습니다. 세션을 제거합니다: {}", stockCode);
-                        closedSessions.add(clientSession); // 닫힌 세션 추가
+                List<WebSocketSession> safeSubscribers;
+                synchronized (stockCodeSubscribers) {
+                    Iterator<WebSocketSession> iterator = subscribers.iterator();
+                    while (iterator.hasNext()) {
+                        WebSocketSession clientSession = iterator.next();
+                        if (!clientSession.isOpen()) {
+                            iterator.remove(); // 닫힌 세션 제거
+                        }
                     }
+                    // 구독자가 없으면 리스트에서 제거
+                    if (subscribers.isEmpty()) {
+                        stockCodeSubscribers.remove(stockCode);
+                    }
+                    // 안전한 복사본 생성
+                    safeSubscribers = new ArrayList<>(subscribers);
                 }
 
-                // 닫힌 세션 제거
-                subscribers.removeAll(closedSessions);
-                if (subscribers.isEmpty()) {
-                    stockCodeSubscribers.remove(stockCode); // 구독자가 없으면 리스트에서 제거
+                // 락을 해제한 상태에서 데이터를 전송
+                for (WebSocketSession clientSession : safeSubscribers) {
+                    try {
+                        if (clientSession.isOpen()) {
+                            clientSession.sendMessage(new TextMessage(
+                                new ObjectMapper().writeValueAsString(stockPriceResponseDTO)));
+                        }
+                    } catch (IOException e) {
+                        log.error("클라이언트로 메시지 전송 중 에러 발생: {}", e.getMessage());
+                    }
                 }
             }
         }
