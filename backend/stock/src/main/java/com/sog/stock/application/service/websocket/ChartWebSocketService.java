@@ -8,9 +8,11 @@ import com.sog.stock.domain.dto.websocket.ChartRealtimeResponseDTO;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
@@ -37,9 +39,9 @@ public class ChartWebSocketService {
     private final String kisWebSocketEndPoint = "/tryitout/H0STCNT0";
 
     // 종목 코드별로 구독한 클라이언트 세션을 관리
-    private final Map<String, List<WebSocketSession>> stockCodeSubscribers = new ConcurrentHashMap<>();
+    private final Map<String, Set<WebSocketSession>> stockCodeSubscribers = new ConcurrentHashMap<>();
     // 세션별 구독 중인 종목을 관리
-    private final Map<WebSocketSession, String> sessionStockMap = new ConcurrentHashMap<>();
+    private final Map<WebSocketSession, Set<String>> sessionStockMap = new ConcurrentHashMap<>();
 
     @Autowired
     public ChartWebSocketService(WebSocketClient webSocketClient, RedisService redisService,
@@ -91,7 +93,7 @@ public class ChartWebSocketService {
             if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
                 log.info("PINGPONG 메시지 수신, 연결 유지 중...");
                 // 모든 구독자에게 PINGPONG 메시지를 전송
-                for (List<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
+                for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
                     for (WebSocketSession clientSession : subscribers) {
                         if (clientSession.isOpen()) {
                             clientSession.sendMessage(new TextMessage(payload));
@@ -120,14 +122,28 @@ public class ChartWebSocketService {
 
                     // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
                     for (String stockCode : stockCodeSubscribers.keySet()) {
-                        List<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-                        // Iterator 사용하여 안전하게 반복
-                        Iterator<WebSocketSession> iterator = subscribers.iterator();
-                        while (iterator.hasNext()) {
-                            WebSocketSession session = iterator.next();
-                            log.info("재발급 후 주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
-                            subscribeToStock(stockCode, session, true); // 다시 구독 요청
+                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+
+                        // subscribers가 null이 아니고, 크기가 0이 아닐때만 실행
+                        if (subscribers != null && !subscribers.isEmpty()) {
+
+                            // 복사본 사용으로 ConcurrnetModificationException 방지
+                            Set<WebSocketSession> subscribersCopy = new HashSet<>(subscribers);
+
+                            for (WebSocketSession clientSession : subscribersCopy) {
+                                if (clientSession.isOpen()) {
+                                    log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
+                                    subscribeToStock(stockCode, clientSession, true); // 구독 재요청
+                                }
+                            }
                         }
+//                        // Iterator 사용하여 안전하게 반복
+//                        Iterator<WebSocketSession> iterator = subscribers.iterator();
+//                        while (iterator.hasNext()) {
+//                            WebSocketSession session = iterator.next();
+//                            log.info("재발급 후 주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
+//                            subscribeToStock(stockCode, session, true); // 다시 구독 요청
+//                        }
                     }
                 } else {
                     log.error("키 재발급에 실패했습니다.");
@@ -148,11 +164,11 @@ public class ChartWebSocketService {
         if (chartRealtimeResponseDTO != null) {
             // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
             String stockCode = chartRealtimeResponseDTO.getStockCode();
-            List<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
             // 구독자가 있을 경우
             if (subscribers != null) {
-                List<WebSocketSession> closedSessions = new ArrayList<>(); // 닫힌 세션 저장
+                Set<WebSocketSession> closedSessions = new HashSet<>(); // 닫힌 세션 저장
 
                 // Iterator 사용하여 세션 안전하게 반복
                 Iterator<WebSocketSession> iterator = subscribers.iterator();

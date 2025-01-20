@@ -235,29 +235,6 @@ public class RealTimeWebSocketService {
         log.info("Sent subscription request for stock: {}", stockCode);
     }
 
-    // 클라이언트가 특정 종목 구독을 해제하는 메서드
-    public void unsubscribeFromStock(String stockCode, WebSocketSession clientSession) {
-        synchronized (this) {
-            // 종목별 구독 세션 관리에서 제거
-            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-            if (subscribers != null) {
-                subscribers.remove(clientSession);
-                if (subscribers.isEmpty()) {
-                    stockCodeSubscribers.remove(stockCode); // 구독자가 없으면 제거
-                }
-            }
-
-            // 세션별 구독 종목 관리에서 제거
-            Set<String> subscribedStocks = sessionStockMap.get(clientSession);
-            if (subscribedStocks != null) {
-                subscribedStocks.remove(stockCode);
-                if (subscribedStocks.isEmpty()) {
-                    sessionStockMap.remove(clientSession); // 세션이 더 이상 필요하지 않으면 제거
-                }
-            }
-        }
-    }
-
 
     // JSON 메시지 판별 (연결 확인 메시지 구분)
     private boolean isJsonMessage(String message) {
@@ -336,19 +313,25 @@ public class RealTimeWebSocketService {
     // 클라이언트 세션 모두 종료 시 KIS WebSocket도 연결 해제 합니다.
     public void disconnectFromKisWebSocket(WebSocketSession session) {
         if (session != null) {
-            // 세션이 구독 중인 모든 종목 가져오기
-            Set<String> subscribedStocks = sessionStockMap.remove(session);
+            Set<String> subscribedStocks;
+            synchronized (sessionStockMap) {
+                // 세션이 구독 중인 모든 종목 가져오고 해당 세션을 삭제
+                subscribedStocks = sessionStockMap.remove(session);
+            }
 
             if (subscribedStocks != null) {
                 for (String stockCode : subscribedStocks) {
-                    // 종목별 구독자 목록에서 해당 세션 제거
-                    Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-                    if (subscribers != null) {
-                        subscribers.remove(session);
+                    synchronized (stockCodeSubscribers) {
+                        // 종목별 구독자 목록에서 해당 세션 제거
+                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                        if (subscribers != null) {
+                            subscribers.remove(session);
 
-                        // 구독자가 없으면 종목 제거
-                        if (subscribers.isEmpty()) {
-                            stockCodeSubscribers.remove(stockCode);
+                            // 구독자가 없으면 종목 제거
+                            if (subscribers.isEmpty()) {
+                                stockCodeSubscribers.remove(stockCode);
+                                log.info("종목 {}에 대한 구독자가 모두 해제되었습니다.", stockCode);
+                            }
                         }
                     }
                 }
@@ -356,14 +339,19 @@ public class RealTimeWebSocketService {
         }
 
         // 모든 세션이 해제된 경우 KIS WebSocket 연결 해제
-        if (sessionStockMap.isEmpty() && kisWebSocketSession != null
-            && kisWebSocketSession.isOpen()) {
+        if (sessionStockMap.isEmpty() && kisWebSocketSession != null) {
             try {
-                kisWebSocketSession.close(); // 한국투자증권 WebSocket 연결 해제
-                kisWebSocketSession = null;
-                log.info("Disconnected from KIS WebSocket");
+                if (kisWebSocketSession.isOpen()) {
+                    kisWebSocketSession.close();
+                    kisWebSocketSession = null;
+                    log.info("모든 클라이언트 세션 종료로 KIS WebSocket을 해제하였습니다.");
+                } else {
+                    kisWebSocketSession = null;
+                    log.warn("KIS WebSocket이 이미 닫혀 있습니다.");
+                }
             } catch (IOException e) {
                 log.error("KIS WebSocket 연결 해제 중 에러 발생: {}", e.getMessage());
+                // TODO: 알림 시스템 추가 -> 시스템 상태 복구
             }
         }
     }
