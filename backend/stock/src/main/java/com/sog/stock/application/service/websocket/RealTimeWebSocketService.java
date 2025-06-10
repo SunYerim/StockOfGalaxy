@@ -215,7 +215,8 @@ public class RealTimeWebSocketService {
         }
 
         // 종목 코드별로 세션 구독 관리
-        Set<WebSocketSession> subscribers = stockCodeSubscribers.computeIfAbsent(stockCode, k -> ConcurrentHashMap.newKeySet());
+        Set<WebSocketSession> subscribers = stockCodeSubscribers.computeIfAbsent(stockCode,
+            k -> ConcurrentHashMap.newKeySet());
 
         // 중복 구독 방지
         if (!forceReSubscribe && subscribers.contains(clientSession)) {
@@ -227,7 +228,8 @@ public class RealTimeWebSocketService {
         subscribers.add(clientSession);
 
         // 세션별 구독 종목 관리
-        sessionStockMap.computeIfAbsent(clientSession, k -> ConcurrentHashMap.newKeySet()).add(stockCode);
+        sessionStockMap.computeIfAbsent(clientSession, k -> ConcurrentHashMap.newKeySet())
+            .add(stockCode);
 
         // KIS WebSocket에 구독 요청 전송
         String requestMessage = createSubscribeMessage(stockCode);
@@ -313,25 +315,16 @@ public class RealTimeWebSocketService {
     // 클라이언트 세션 모두 종료 시 KIS WebSocket도 연결 해제 합니다.
     public void disconnectFromKisWebSocket(WebSocketSession session) {
         if (session != null) {
-            Set<String> subscribedStocks;
-            synchronized (sessionStockMap) {
-                // 세션이 구독 중인 모든 종목 가져오고 해당 세션을 삭제
-                subscribedStocks = sessionStockMap.remove(session);
-            }
-
+            Set<String> subscribedStocks = sessionStockMap.remove(session);
             if (subscribedStocks != null) {
                 for (String stockCode : subscribedStocks) {
-                    synchronized (stockCodeSubscribers) {
-                        // 종목별 구독자 목록에서 해당 세션 제거
-                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-                        if (subscribers != null) {
-                            subscribers.remove(session);
-
-                            // 구독자가 없으면 종목 제거
-                            if (subscribers.isEmpty()) {
-                                stockCodeSubscribers.remove(stockCode);
-                                log.info("종목 {}에 대한 구독자가 모두 해제되었습니다.", stockCode);
-                            }
+                    Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                    if (subscribers != null) {
+                        subscribers.remove(session);
+                        // 구독자가 없으면 종목 제거
+                        if (subscribers.isEmpty()) {
+                            stockCodeSubscribers.remove(stockCode);
+                            log.info("종목 {}에 대한 구독자가 모두 해제되었습니다.", stockCode);
                         }
                     }
                 }
