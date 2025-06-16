@@ -87,114 +87,118 @@ public class ChartWebSocketService {
         // json메시지 (구독 성공) 처리
         if (isJsonMessage(payload)) {
             JSONObject jsonResponse = new JSONObject(payload);
+            handleKisControlMessage(jsonResponse);
+        } else {
+            // 실시간 데이터 처리
+            ChartRealtimeResponseDTO chartRealtimeResponseDTO = parseStockResponse(payload);
+            if (chartRealtimeResponseDTO != null) {
+                // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
+                String stockCode = chartRealtimeResponseDTO.getStockCode();
+                Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
-            // PINGPONG 메시지 처리
-            if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
-                log.info("PINGPONG 메시지 수신, 연결 유지 중...");
-                // 모든 구독자에게 PINGPONG 메시지를 전송
-                synchronized (stockCodeSubscribers) {
-                    for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
+                // 구독자가 있을 경우
+                if (subscribers != null) {
+                    Set<WebSocketSession> safeSubscribers;
+                    synchronized (stockCodeSubscribers) {
                         Iterator<WebSocketSession> iterator = subscribers.iterator();
                         while (iterator.hasNext()) {
                             WebSocketSession clientSession = iterator.next();
                             if (clientSession.isOpen()) {
-                                clientSession.sendMessage(new TextMessage(payload));
-                            } else {
                                 iterator.remove();
                             }
                         }
+                        if (subscribers.isEmpty()) {
+                            stockCodeSubscribers.remove(stockCode);
+                        }
+                        safeSubscribers = new HashSet<>(subscribers);
                     }
-                }
-                return; // 연결 상태 유지 메시지이므로 여기서 처리 끝
-            }
 
-            String msgCd = jsonResponse.getJSONObject("body").getString("msg_cd");
-            if (msgCd.equals("OPSP0002")) {
-                log.warn("이미 해당 주식에 대해 구독 중입니다. 메시지 코드: {}", msgCd);
-                return; // 추가 작업 없이 종료
-            }
-
-            // "OPSP000"이 아닌 경우, 키 재발급 요청 및 재연결
-            if (!msgCd.equals("OPSP0000")) {
-                log.warn("유효하지 않은 승인 키. 새로운 키를 요청합니다. 메시지 코드: {}", msgCd);
-                kisChartWebSocketKeyService.requestNewWebSocketKey();
-                kisWebSocketApprovalKey = kisChartWebSocketKeyService.getRealTimeWebSocketKey();
-
-                // 재발급 받은 키로 다시 연결 시도
-                if (kisWebSocketApprovalKey != null && !kisWebSocketApprovalKey.isEmpty()) {
-                    log.info("새로운 키로 WebSocket을 다시 연결합니다.");
-                    connectToKisWebSocket(); // WebSocket 재연결
-
-                    // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
-                    // 동기화로 데이터 무결성 보장
-                    synchronized (stockCodeSubscribers) {
-                        for (String stockCode : stockCodeSubscribers.keySet()) {
-                            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-
-                            // subscribers가 null이 아니고, 크기가 0이 아닐때만 실행
-                            if (subscribers != null && !subscribers.isEmpty()) {
-                                Iterator<WebSocketSession> iterator = subscribers.iterator();
-                                while (iterator.hasNext()) {
-                                    WebSocketSession clientSession = iterator.next();
-                                    if (clientSession.isOpen()) {
-                                        log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
-                                        subscribeToStock(stockCode, clientSession, true); // 구독 재요청
-                                    } else {
-                                        iterator.remove();
-                                    }
-                                }
+                    for (WebSocketSession clientSession : safeSubscribers) {
+                        try {
+                            if (clientSession.isOpen()) {
+                                clientSession.sendMessage(new TextMessage(
+                                    new ObjectMapper().writeValueAsString(
+                                        chartRealtimeResponseDTO)));
                             }
+                        } catch (IOException e) {
+                            log.error("클라이언트로 메시지 전송 중 에러 발생: {}", e.getMessage());
                         }
                     }
-                } else {
-                    log.error("키 재발급에 실패했습니다.");
-                    throw new IllegalStateException("WebSocket 키 재발급 실패");
                 }
-                return; // 재발급 요청 후 처리 종료
-            }
-            // 구독 성공 메시지 처리
-            if (jsonResponse.getJSONObject("body").getString("msg1").equals("SUBSCRIBE SUCCESS")) {
-                log.info("주식 구독 성공: {}",
-                    jsonResponse.getJSONObject("header").getString("tr_key"));
-                return;
             }
         }
+    }
 
-        // 실시간 데이터 처리
-        ChartRealtimeResponseDTO chartRealtimeResponseDTO = parseStockResponse(payload);
-        if (chartRealtimeResponseDTO != null) {
-            // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
-            String stockCode = chartRealtimeResponseDTO.getStockCode();
-            Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-
-            // 구독자가 있을 경우
-            if (subscribers != null) {
-                Set<WebSocketSession> safeSubscribers;
-                synchronized (stockCodeSubscribers) {
+    private void handleKisControlMessage(JSONObject jsonResponse) throws Exception {
+        // PINGPONG 메시지 처리
+        if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
+            log.info("PINGPONG 메시지 수신, 연결 유지 중...");
+            // 모든 구독자에게 PINGPONG 메시지를 전송
+            synchronized (stockCodeSubscribers) {
+                for (Set<WebSocketSession> subscribers : stockCodeSubscribers.values()) {
                     Iterator<WebSocketSession> iterator = subscribers.iterator();
                     while (iterator.hasNext()) {
                         WebSocketSession clientSession = iterator.next();
                         if (clientSession.isOpen()) {
+                            clientSession.sendMessage(new TextMessage(jsonResponse.toString()));
+                        } else {
                             iterator.remove();
                         }
                     }
-                    if (subscribers.isEmpty()) {
-                        stockCodeSubscribers.remove(stockCode);
-                    }
-                    safeSubscribers = new HashSet<>(subscribers);
-                }
-
-                for (WebSocketSession clientSession : safeSubscribers) {
-                    try {
-                        if (clientSession.isOpen()) {
-                            clientSession.sendMessage(new TextMessage(
-                                new ObjectMapper().writeValueAsString(chartRealtimeResponseDTO)));
-                        }
-                    } catch (IOException e) {
-                        log.error("클라이언트로 메시지 전송 중 에러 발생: {}", e.getMessage());
-                    }
                 }
             }
+            return; // 연결 상태 유지 메시지이므로 여기서 처리 끝
+        }
+
+        String msgCd = jsonResponse.getJSONObject("body").getString("msg_cd");
+        if (msgCd.equals("OPSP0002")) {
+            log.warn("이미 해당 주식에 대해 구독 중입니다. 메시지 코드: {}", msgCd);
+            return; // 추가 작업 없이 종료
+        }
+
+        // "OPSP000"이 아닌 경우, 키 재발급 요청 및 재연결
+        if (!msgCd.equals("OPSP0000")) {
+            log.warn("유효하지 않은 승인 키. 새로운 키를 요청합니다. 메시지 코드: {}", msgCd);
+            kisChartWebSocketKeyService.requestNewWebSocketKey();
+            kisWebSocketApprovalKey = kisChartWebSocketKeyService.getRealTimeWebSocketKey();
+
+            // 재발급 받은 키로 다시 연결 시도
+            if (kisWebSocketApprovalKey != null && !kisWebSocketApprovalKey.isEmpty()) {
+                log.info("새로운 키로 WebSocket을 다시 연결합니다.");
+                connectToKisWebSocket(); // WebSocket 재연결
+
+                // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
+                // 동기화로 데이터 무결성 보장
+                synchronized (stockCodeSubscribers) {
+                    for (String stockCode : stockCodeSubscribers.keySet()) {
+                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+
+                        // subscribers가 null이 아니고, 크기가 0이 아닐때만 실행
+                        if (subscribers != null && !subscribers.isEmpty()) {
+                            Iterator<WebSocketSession> iterator = subscribers.iterator();
+                            while (iterator.hasNext()) {
+                                WebSocketSession clientSession = iterator.next();
+                                if (clientSession.isOpen()) {
+                                    log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
+                                    subscribeToStock(stockCode, clientSession, true); // 구독 재요청
+                                } else {
+                                    iterator.remove();
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                log.error("키 재발급에 실패했습니다.");
+                throw new IllegalStateException("WebSocket 키 재발급 실패");
+            }
+            return; // 재발급 요청 후 처리 종료
+        }
+        // 구독 성공 메시지 처리
+        if (jsonResponse.getJSONObject("body").getString("msg1").equals("SUBSCRIBE SUCCESS")) {
+            log.info("주식 구독 성공: {}",
+                jsonResponse.getJSONObject("header").getString("tr_key"));
+            return;
         }
     }
 
