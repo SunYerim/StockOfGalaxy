@@ -95,40 +95,43 @@ public class RealTimeWebSocketService {
             // 실시간 데이터 처리
             StockPriceResponseDTO stockPriceResponseDTO = parseStockResponse(payload);
             if (stockPriceResponseDTO != null) {
-                // 해당 종목을 구독한 모든 클라이언트 세션에 실시간 데이터를 전송
-                String stockCode = stockPriceResponseDTO.getStockCode();
-                Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+                distributeStockPrice(stockPriceResponseDTO); // 실시간 데이터 배포 위임
+            }
+        }
+    }
 
-                // 구독자가 있을 경우
-                if (subscribers != null) {
-                    Set<WebSocketSession> safeSubscribers;
-                    synchronized (stockCodeSubscribers) {
-                        Iterator<WebSocketSession> iterator = subscribers.iterator();
-                        while (iterator.hasNext()) {
-                            WebSocketSession clientSession = iterator.next();
-                            if (!clientSession.isOpen()) {
-                                iterator.remove(); // 닫힌 세션 제거
-                            }
-                        }
-                        // 구독자가 없으면 리스트에서 제거
-                        if (subscribers.isEmpty()) {
-                            stockCodeSubscribers.remove(stockCode);
-                        }
-                        // 안전한 복사본 생성
-                        safeSubscribers = new HashSet<>(subscribers);
-                    }
+    private void distributeStockPrice(StockPriceResponseDTO stockPriceResponseDTO) {
+        String stockCode = stockPriceResponseDTO.getStockCode();
+        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
 
-                    // 락을 해제한 상태에서 데이터를 전송
-                    for (WebSocketSession clientSession : safeSubscribers) {
-                        try {
-                            if (clientSession.isOpen()) {
-                                clientSession.sendMessage(new TextMessage(
-                                    new ObjectMapper().writeValueAsString(stockPriceResponseDTO)));
-                            }
-                        } catch (IOException e) {
-                            log.error("클라이언트로 메시지 전송 중 에러 발생: {}", e.getMessage());
-                        }
+        // 구독자가 있을 경우
+        if (subscribers != null) {
+            Set<WebSocketSession> safeSubscribers;
+            synchronized (stockCodeSubscribers) {
+                Iterator<WebSocketSession> iterator = subscribers.iterator();
+                while (iterator.hasNext()) {
+                    WebSocketSession clientSession = iterator.next();
+                    if (!clientSession.isOpen()) {
+                        iterator.remove(); // 닫힌 세션 제거
                     }
+                }
+                // 구독자가 없으면 리스트에서 제거
+                if (subscribers.isEmpty()) {
+                    stockCodeSubscribers.remove(stockCode);
+                }
+                // 안전한 복사본 생성
+                safeSubscribers = new HashSet<>(subscribers);
+            }
+
+            // 락을 해제한 상태에서 데이터를 전송
+            for (WebSocketSession clientSession : safeSubscribers) {
+                try {
+                    if (clientSession.isOpen()) {
+                        clientSession.sendMessage(new TextMessage(
+                            new ObjectMapper().writeValueAsString(stockPriceResponseDTO)));
+                    }
+                } catch (IOException e) {
+                    log.error("클라이언트로 메시지 전송 중 에러 발생: {}", e.getMessage());
                 }
             }
         }
