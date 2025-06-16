@@ -173,7 +173,7 @@ public class RealTimeWebSocketService {
 
             // 구독자가 있을 경우
             if (subscribers != null) {
-                List<WebSocketSession> safeSubscribers;
+                Set<WebSocketSession> safeSubscribers;
                 synchronized (stockCodeSubscribers) {
                     Iterator<WebSocketSession> iterator = subscribers.iterator();
                     while (iterator.hasNext()) {
@@ -187,7 +187,7 @@ public class RealTimeWebSocketService {
                         stockCodeSubscribers.remove(stockCode);
                     }
                     // 안전한 복사본 생성
-                    safeSubscribers = new ArrayList<>(subscribers);
+                    safeSubscribers = new HashSet<>(subscribers);
                 }
 
                 // 락을 해제한 상태에서 데이터를 전송
@@ -314,24 +314,35 @@ public class RealTimeWebSocketService {
 
     // 클라이언트 세션 모두 종료 시 KIS WebSocket도 연결 해제 합니다.
     public void disconnectFromKisWebSocket(WebSocketSession session) {
-        if (session != null) {
-            Set<String> subscribedStocks = sessionStockMap.remove(session);
-            if (subscribedStocks != null) {
-                for (String stockCode : subscribedStocks) {
-                    Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-                    if (subscribers != null) {
-                        subscribers.remove(session);
-                        // 구독자가 없으면 종목 제거
-                        if (subscribers.isEmpty()) {
-                            stockCodeSubscribers.remove(stockCode);
+        // 1. 유효하지 않거나 이미 닫힌 세션은 즉시 처리 종료
+        if (session == null || !session.isOpen()) {
+            return;
+        }
+
+        // 2. 해당 세션이 구독했던 모든 종목 코드 목록을 가져오고, sessionStockMap에서 세션 정보 제거
+        Set<String> subscribedStocks = sessionStockMap.remove(session);
+
+        if (subscribedStocks != null) {
+            // 3. 구독했던 각 종목에 대해 반복 처리
+            for (String stockCode : subscribedStocks) {
+                // 4. stockCodeSubscribers에서 해당 종목의 구독자 목록을 안전하게 업데이트
+                //    computeIfPresent를 사용하여 동시성 문제 방지 및 Map 값 업데이트
+                stockCodeSubscribers.computeIfPresent(stockCode,
+                    (key, currentSubscribers) -> {
+                        currentSubscribers.remove(session); // 현재 세션을 해당 종목 구독자 Set에서 제거
+
+                        // 5. 해당 종목의 구독자 Set이 비었는지 확인
+                        if (currentSubscribers.isEmpty()) {
                             log.info("종목 {}에 대한 구독자가 모두 해제되었습니다.", stockCode);
+                            return null; // Set이 비었으므로 Map에서 해당 종목 엔트리 제거
                         }
-                    }
-                }
+                        return currentSubscribers; // Set이 비어있지 않으므로 Map에 Set 유지
+                    });
             }
         }
 
-        // 모든 세션이 해제된 경우 KIS WebSocket 연결 해제
+        // 6. 모든 세션이 해제된 경우 KIS WebSocket 연결 해제
+        // sessionStockMap이 비었는지 확인하는 부분도 동시성 고려
         if (sessionStockMap.isEmpty() && kisWebSocketSession != null) {
             try {
                 if (kisWebSocketSession.isOpen()) {
