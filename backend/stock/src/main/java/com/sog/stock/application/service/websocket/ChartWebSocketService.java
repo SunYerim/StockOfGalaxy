@@ -133,7 +133,7 @@ public class ChartWebSocketService {
     }
 
     private void handleKisControlMessage(JSONObject jsonResponse) throws Exception {
-        // PINGPONG 메시지 처리
+        // 1. PINGPONG 메시지 처리
         if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
             log.info("PINGPONG 메시지 수신, 연결 유지 중...");
             // 모든 구독자에게 PINGPONG 메시지를 전송
@@ -145,64 +145,78 @@ public class ChartWebSocketService {
                         if (clientSession.isOpen()) {
                             clientSession.sendMessage(new TextMessage(jsonResponse.toString()));
                         } else {
-                            iterator.remove();
+                            iterator.remove(); // 닫힌 세션 제거
                         }
                     }
                 }
             }
-            return; // 연결 상태 유지 메시지이므로 여기서 처리 끝
+            return; // PINGPONG 메시지 처리 후 바로 종료
         }
 
         String msgCd = jsonResponse.getJSONObject("body").getString("msg_cd");
+
+        // 2. 이미 해당 주식에 대해 구독 중인 경우 처리
         if (msgCd.equals("OPSP0002")) {
             log.warn("이미 해당 주식에 대해 구독 중입니다. 메시지 코드: {}", msgCd);
             return; // 추가 작업 없이 종료
         }
 
-        // "OPSP000"이 아닌 경우, 키 재발급 요청 및 재연결
+        // 3. 승인 키가 유효하지 않거나 기타 오류인 경우 처리
+        // KIS 메시지 코드가 "OPSP0000"이 아니라면 (즉, 구독 성공이 아니라면) 키 재발급 로직을 수행.
         if (!msgCd.equals("OPSP0000")) {
-            log.warn("유효하지 않은 승인 키. 새로운 키를 요청합니다. 메시지 코드: {}", msgCd);
-            kisChartWebSocketKeyService.requestNewWebSocketKey();
-            kisWebSocketApprovalKey = kisChartWebSocketKeyService.getRealTimeWebSocketKey();
-
-            // 재발급 받은 키로 다시 연결 시도
-            if (kisWebSocketApprovalKey != null && !kisWebSocketApprovalKey.isEmpty()) {
-                log.info("새로운 키로 WebSocket을 다시 연결합니다.");
-                connectToKisWebSocket(); // WebSocket 재연결
-
-                // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
-                // 동기화로 데이터 무결성 보장
-                synchronized (stockCodeSubscribers) {
-                    for (String stockCode : stockCodeSubscribers.keySet()) {
-                        Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
-
-                        // subscribers가 null이 아니고, 크기가 0이 아닐때만 실행
-                        if (subscribers != null && !subscribers.isEmpty()) {
-                            Iterator<WebSocketSession> iterator = subscribers.iterator();
-                            while (iterator.hasNext()) {
-                                WebSocketSession clientSession = iterator.next();
-                                if (clientSession.isOpen()) {
-                                    log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
-                                    subscribeToStock(stockCode, clientSession, true); // 구독 재요청
-                                } else {
-                                    iterator.remove();
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                log.error("키 재발급에 실패했습니다.");
-                throw new IllegalStateException("WebSocket 키 재발급 실패");
-            }
-            return; // 재발급 요청 후 처리 종료
+            handleInvalidApprovalKeyAndResubscribe();
+            return;
         }
-        // 구독 성공 메시지 처리
+
+        // 4. 구독 성공 메시지 처리 (위의 모든 조건에 해당하지 않고, msgCd가 "OPSP0000"일 경우)
         if (jsonResponse.getJSONObject("body").getString("msg1").equals("SUBSCRIBE SUCCESS")) {
             log.info("주식 구독 성공: {}",
                 jsonResponse.getJSONObject("header").getString("tr_key"));
             return;
         }
+
+        // 만약 위에 명시된 KIS 제어 메시지가 아니라면(일일 요청 최대 한도 도달 등)
+        // 추가 로깅이나 예외 처리 가능 TO-DO
+        log.warn("알 수 없는 KIS 제어 메시지 수신: {}", jsonResponse.toString());
+    }
+
+    private void handleInvalidApprovalKeyAndResubscribe() throws Exception {
+        log.warn("유효하지 않은 승인 키. 새로운 키를 요청합니다. (KIS 재연결 및 재구독 시도)");
+        kisChartWebSocketKeyService.requestNewWebSocketKey();
+        kisWebSocketApprovalKey = kisChartWebSocketKeyService.getRealTimeWebSocketKey();
+
+        // 재발급 받은 키로 다시 연결 시도
+        if (kisWebSocketApprovalKey != null && !kisWebSocketApprovalKey.isEmpty()) {
+            log.info("새로운 키로 WebSocket을 다시 연결합니다.");
+            connectToKisWebSocket(); // WebSocket 재연결
+
+            // 재연결 후 기존 구독자들에 대해 다시 구독 요청 보내기
+            // 동기화로 데이터 무결성 보장
+            synchronized (stockCodeSubscribers) {
+                for (String stockCode : stockCodeSubscribers.keySet()) {
+                    Set<WebSocketSession> subscribers = stockCodeSubscribers.get(stockCode);
+
+                    // subscribers가 null이 아니고, 크기가 0이 아닐때만 실행
+                    if (subscribers != null && !subscribers.isEmpty()) {
+                        Iterator<WebSocketSession> iterator = subscribers.iterator();
+                        while (iterator.hasNext()) {
+                            WebSocketSession clientSession = iterator.next();
+                            if (clientSession.isOpen()) {
+                                log.info("주식 코드 {}에 대한 구독 요청을 다시 시도합니다.", stockCode);
+                                subscribeToStock(stockCode, clientSession, true); // 구독 재요청
+                            } else {
+                                iterator.remove(); // 닫힌 세션 제거
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            log.error("키 재발급에 실패했습니다.");
+            throw new IllegalStateException("WebSocket 키 재발급 실패");
+        }
+        return; // 재발급 요청 후 처리 종료
+
     }
 
     // 클라이언트가 새로운 종목을 구독할 때 호출되는 메서드
