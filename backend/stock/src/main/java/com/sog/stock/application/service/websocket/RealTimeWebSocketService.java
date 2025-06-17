@@ -5,11 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sog.stock.application.service.kis.KisRealTimeWebSocketKeyService;
 import com.sog.stock.domain.dto.websocket.StockPriceResponseDTO;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,7 +27,6 @@ import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 @Slf4j
 public class RealTimeWebSocketService {
 
-    // kis와 spring간 -> 궁극적인 목적은 웹소켓 실시간 통신 (실시간 시세)
     private final WebSocketClient webSocketClient;
     private WebSocketSession kisWebSocketSession;
     private final KisRealTimeWebSocketKeyService kisRealTimeWebSocketKeyService;
@@ -38,6 +35,22 @@ public class RealTimeWebSocketService {
     // 도메인 정보와 엔드포인트 정보 추가
     private final String kisWebSocketDomain = "ws://ops.koreainvestment.com:21000";
     private final String kisWebSocketEndPoint = "/tryitout/H0STCNT0";
+
+    // KIS 메시지 관련 상수 정의
+    private static final String KIS_TR_ID_PINGPONG = "PINGPONG";
+    private static final String KIS_TR_ID_STOCK_QUOTE = "H0STCNT0"; // 실시간 시세 구독 요청 TR ID
+    private static final String KIS_MSG_CODE_SUBSCRIBE_SUCCESS = "OPSP0000";
+    private static final String KIS_MSG_CODE_ALREADY_SUBSCRIBED = "OPSP0002";
+    private static final String KIS_MSG_TEXT_SUBSCRIBE_SUCCESS = "SUBSCRIBE SUCCESS";
+
+    // KIS 메시지 헤더와 바디에 사용되는 키 상수
+    private static final String KIS_HEADER_APPROVAL_KEY = "approval_key";
+    private static final String KIS_HEADER_CUST_TYPE = "custtype";
+    private static final String KIS_HEADER_TR_TYPE = "tr_type";
+    private static final String KIS_HEADER_CONTENT_TYPE = "content-type";
+    private static final String KIS_BODY_INPUT = "input";
+    private static final String KIS_INPUT_TR_ID = "tr_id";
+    private static final String KIS_INPUT_TR_KEY = "tr_key";
 
     // 종목 코드별로 구독한 클라이언트 세션을 관리
     private final Map<String, Set<WebSocketSession>> stockCodeSubscribers = new ConcurrentHashMap<>();
@@ -139,7 +152,7 @@ public class RealTimeWebSocketService {
 
     private void handleKisControlMessage(JSONObject jsonResponse) throws Exception {
         // 1. PINGPONG 메시지 처리
-        if (jsonResponse.getJSONObject("header").getString("tr_id").equals("PINGPONG")) {
+        if (jsonResponse.getJSONObject("header").getString("tr_id").equals(KIS_TR_ID_PINGPONG)) {
             log.info("PINGPONG 메시지 수신, 연결 유지 중...");
             // 모든 구독자에게 PINGPONG 메시지를 전송
             synchronized (stockCodeSubscribers) { // 동기화로 데이터 무결성 보장
@@ -161,20 +174,21 @@ public class RealTimeWebSocketService {
         String msgCd = jsonResponse.getJSONObject("body").getString("msg_cd");
 
         // 2. 이미 해당 주식에 대해 구독 중인 경우 처리
-        if (msgCd.equals("OPSP0002")) {
+        if (msgCd.equals(KIS_MSG_CODE_ALREADY_SUBSCRIBED)) {
             log.warn("이미 해당 주식에 대해 구독 중입니다. 메시지 코드: {}", msgCd);
             return; // 추가 작업 없이 종료
         }
 
         // 3. 승인 키가 유효하지 않거나 기타 오류인 경우 처리
         // KIS 메시지 코드가 "OPSP0000"이 아니라면 (즉, 구독 성공이 아니라면) 키 재발급 로직을 수행.
-        if (!msgCd.equals("OPSP0000")) {
+        if (!msgCd.equals(KIS_MSG_CODE_SUBSCRIBE_SUCCESS)) {
             handleInvalidApprovalKeyAndResubscribe();
             return;
         }
 
         // 4. 구독 성공 메시지 처리 (위의 모든 조건에 해당하지 않고, msgCd가 "OPSP0000"일 경우)
-        if (jsonResponse.getJSONObject("body").getString("msg1").equals("SUBSCRIBE SUCCESS")) {
+        if (jsonResponse.getJSONObject("body").getString("msg1")
+            .equals(KIS_MSG_TEXT_SUBSCRIBE_SUCCESS)) {
             log.info("주식 구독 성공: {}",
                 jsonResponse.getJSONObject("header").getString("tr_key"));
             return;
@@ -298,16 +312,16 @@ public class RealTimeWebSocketService {
     // KIS WebSocket으로 주식 구독 메시지를 전송하기 위한 JSON 메시지 생성
     private String createSubscribeMessage(String stockCode) {
         Map<String, String> header = new HashMap<>();
-        header.put("approval_key", kisWebSocketApprovalKey);
-        header.put("custtype", "P");
-        header.put("tr_type", "1");
-        header.put("content-type", "utf-8");
+        header.put(KIS_HEADER_APPROVAL_KEY, kisWebSocketApprovalKey);
+        header.put(KIS_HEADER_CUST_TYPE, "P");
+        header.put(KIS_HEADER_TR_TYPE, "1");
+        header.put(KIS_HEADER_CONTENT_TYPE, "utf-8");
 
         Map<String, Map<String, String>> body = new HashMap<>();
         Map<String, String> input = new HashMap<>();
-        input.put("tr_id", "H0STCNT0");
-        input.put("tr_key", stockCode);
-        body.put("input", input);
+        input.put(KIS_INPUT_TR_ID, KIS_TR_ID_STOCK_QUOTE);
+        input.put(KIS_INPUT_TR_KEY, stockCode);
+        body.put(KIS_BODY_INPUT, input);
 
         Map<String, Object> request = new HashMap<>();
         request.put("header", header);
