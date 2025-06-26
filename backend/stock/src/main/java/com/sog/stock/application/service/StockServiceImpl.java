@@ -323,7 +323,7 @@ public class StockServiceImpl implements StockService {
     @Override
     public StockPresentPriceResponseDTO searchStockPresentPrice(String stockCode) {
         // kisToken redis에서
-        String token = kisTokenService.getAccessToken().block(); // 동기처리
+        String token = kisTokenService.getAccessToken();
         if (token == null) {
             throw new RuntimeException("kis 토큰 접근 실패");
         }
@@ -345,7 +345,7 @@ public class StockServiceImpl implements StockService {
     @Override
     public MinuteStockPriceListDTO getMinuteStockPriceList(String stockCode, String time) {
         // kisToken redis에서 가져오기 (필요하면 재발급)
-        String token = kisTokenService.getAccessToken().block();
+        String token = kisTokenService.getAccessToken();
         if (token == null) {
             throw new RuntimeException("KIS 토큰 접근 실패");
         }
